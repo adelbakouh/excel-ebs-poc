@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>POC EBS — Excel sans ActiveX</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 12px; color: #262626; }
+    h2 { font-size: 16px; color: #1F4E79; margin: 0 0 4px; }
+    p.sub { font-size: 12px; color: #666; margin: 0 0 14px; }
+    button { display:block; width:100%; margin:6px 0; padding:10px; font-size:13px;
+             border:1px solid #1F4E79; background:#1F4E79; color:#fff; cursor:pointer; border-radius:4px; }
+    button:hover { background:#163a5c; }
+    #log { margin-top:14px; padding:10px; background:#F2F2F2; border:1px solid #D9D9D9;
+           font-family:Consolas,monospace; font-size:12px; white-space:pre-wrap; min-height:120px; }
+    .ok { color:#1F6B46; } .ko { color:#C74634; }
+  </style>
+</head>
+<body>
+  <h2>POC — Excel &harr; serveur, sans ActiveX</h2>
+  <p class="sub">Office.js + fetch HTTPS. Aucune macro, aucun COM.</p>
+
+  <button id="btnFetch">1. Tester le fetch (appel sortant)</button>
+  <button id="btnWrite">2. fetch &rarr; &eacute;crire dans la feuille</button>
+  <button id="btnRead">3. lire la feuille &rarr; POST</button>
+
+  <div id="log">Pr&ecirc;t.</div>
+
+  <script>
+    function log(msg, cls) {
+      var el = document.getElementById("log");
+      var line = document.createElement("div");
+      if (cls) line.className = cls;
+      line.textContent = msg;
+      el.appendChild(line);
+    }
+
+    Office.onReady(function (info) {
+      if (info.host === Office.HostType.Excel) {
+        log("Office.js chargé — hôte Excel détecté.", "ok");
+        document.getElementById("btnFetch").onclick = testFetch;
+        document.getElementById("btnWrite").onclick = fetchWrite;
+        document.getElementById("btnRead").onclick = readPost;
+      } else {
+        log("Hôte non-Excel.", "ko");
+      }
+    });
+
+    // 1 — prouve que l'appel HTTPS sortant part du bac à sable Excel
+    async function testFetch() {
+      try {
+        var r = await fetch("https://jsonplaceholder.typicode.com/users/1");
+        var d = await r.json();
+        log("OK fetch : réponse serveur = " + d.name, "ok");
+      } catch (e) { log("ERREUR fetch : " + e.message, "ko"); }
+    }
+
+    // 2 — fetch serveur -> écriture dans une plage (l'aller, type "Télécharger le modèle")
+    async function fetchWrite() {
+      try {
+        var r = await fetch("https://jsonplaceholder.typicode.com/users");
+        var users = await r.json();
+        await Excel.run(async function (ctx) {
+          var sh = ctx.workbook.worksheets.getActiveWorksheet();
+          sh.getRange("A1:C1").values = [["ID", "Nom", "Email"]];
+          var rows = users.map(function (u) { return [u.id, u.name, u.email]; });
+          sh.getRange("A2").getResizedRange(rows.length - 1, 2).values = rows;
+          sh.getUsedRange().format.autofitColumns();
+          await ctx.sync();
+        });
+        log("OK écriture : " + users.length + " lignes posées dans la feuille.", "ok");
+      } catch (e) { log("ERREUR écriture : " + e.message, "ko"); }
+    }
+
+    // 3 — lecture de la plage -> POST (le retour, type "Valider")
+    async function readPost() {
+      try {
+        var values;
+        await Excel.run(async function (ctx) {
+          var used = ctx.workbook.worksheets.getActiveWorksheet().getUsedRange();
+          used.load("values");
+          await ctx.sync();
+          values = used.values;
+        });
+        var r = await fetch("https://httpbin.org/post", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lignes: values })
+        });
+        var echo = await r.json();
+        log("OK POST : le serveur a bien reçu " + echo.json.lignes.length + " lignes.", "ok");
+      } catch (e) { log("ERREUR POST : " + e.message, "ko"); }
+    }
+  </script>
+</body>
+</html>
