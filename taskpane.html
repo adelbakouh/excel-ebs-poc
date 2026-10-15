@@ -8,12 +8,13 @@
   <style>
     body { font-family: Segoe UI, Arial, sans-serif; margin: 12px; color: #262626; }
     h2 { font-size: 15px; color: #1F4E79; margin: 0 0 4px; }
-    p.sub { font-size: 12px; color: #666; margin: 0 0 12px; }
+    p.sub { font-size: 12px; color: #666; margin: 0 0 10px; }
     .step { font-size: 11px; font-weight: bold; color: #1F4E79; margin: 12px 0 4px; }
     select { width: 100%; padding: 7px; font-size: 13px; margin: 2px 0 6px; }
     button { display:block; width:100%; margin:4px 0; padding:9px; font-size:13px;
              border:1px solid #1F4E79; background:#1F4E79; color:#fff; cursor:pointer; border-radius:4px; }
-    button:hover { background:#163a5c; }
+    button.alt { background:#1F6B46; border-color:#1F6B46; }
+    button:hover { filter:brightness(0.92); }
     button:disabled { background:#9bb3cc; border-color:#9bb3cc; cursor:default; }
     #log { margin-top:12px; padding:9px; background:#F2F2F2; border:1px solid #D9D9D9;
            font-family:Consolas,monospace; font-size:11px; white-space:pre-wrap; min-height:90px; }
@@ -22,7 +23,7 @@
 </head>
 <body>
   <h2>Chargement GL &mdash; Mod&egrave;les Oracle</h2>
-  <p class="sub">Simulation du flux WebADI sans ActiveX : get_integrators &rarr; choix du mod&egrave;le &rarr; g&eacute;n&eacute;ration (colonnes + listes).</p>
+  <p class="sub">Flux WebADI sans ActiveX : mod&egrave;le &rarr; saisie &rarr; validation &rarr; chargement.</p>
 
   <div class="step">1. Mes mod&egrave;les autoris&eacute;s</div>
   <button id="btnLoad">Charger mes mod&egrave;les (get_integrators)</button>
@@ -31,13 +32,21 @@
   <div class="step">2. G&eacute;n&eacute;rer le mod&egrave;le</div>
   <button id="btnGen" disabled>G&eacute;n&eacute;rer le mod&egrave;le choisi</button>
 
+  <div class="step">3. Valider la saisie (contr&ocirc;les N1)</div>
+  <button id="btnValid" class="alt" disabled>Valider</button>
+
+  <div class="step">4. Charger vers EBS</div>
+  <button id="btnLoadEbs" class="alt" disabled>Charger (Journal Import)</button>
+
   <div id="log">Pr&ecirc;t.</div>
 
   <script>
-    // PROD : remplacer ces fichiers mock par les appels REST ISG (get_integrators / getMetadata)
+    // PROD : remplacer ces fichiers mock par les appels REST ISG
     const URL_INTEGRATORS = "integrators.json";
-    const URL_METADATA    = { "JOURNALS_120": "journals_metadata.json" };  // 1 par integrateur
+    const URL_METADATA    = { "JOURNALS_120": "journals_metadata.json" };
     const URL_CURRENCIES  = "currencies.json";
+
+    var LAYOUT = null;   // memorise la disposition du modele genere
 
     function log(msg, cls) {
       var el = document.getElementById("log");
@@ -47,22 +56,23 @@
       el.appendChild(line);
     }
     function colLetter(n){ var s=""; while(n>0){ var m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=Math.floor((n-1)/26);} return s; }
+    function num(v){ if(v===""||v===null||v===undefined) return 0; var n=Number(String(v).replace(",",".")); return isNaN(n)?0:n; }
 
     Office.onReady(function (info) {
       if (info.host === Office.HostType.Excel) {
         log("Office.js chargé — hôte Excel détecté.", "ok");
-        document.getElementById("btnLoad").onclick = chargerModeles;
-        document.getElementById("btnGen").onclick  = genererModele;
+        document.getElementById("btnLoad").onclick    = chargerModeles;
+        document.getElementById("btnGen").onclick     = genererModele;
+        document.getElementById("btnValid").onclick   = valider;
+        document.getElementById("btnLoadEbs").onclick = charger;
       } else { log("Hôte non-Excel.", "ko"); }
     });
 
-    // --- Etape 1 : get_integrators (mock) -> remplir la liste ---
+    // --- 1. get_integrators (mock) ---
     async function chargerModeles() {
       try {
-        var r = await fetch(URL_INTEGRATORS, { cache: "no-store" });
-        var data = await r.json();
-        var sel = document.getElementById("selInteg");
-        sel.innerHTML = "";
+        var data = await (await fetch(URL_INTEGRATORS, { cache:"no-store" })).json();
+        var sel = document.getElementById("selInteg"); sel.innerHTML = "";
         data.integrators.forEach(function (it) {
           var o = document.createElement("option");
           o.value = it.integrator_code;
@@ -71,92 +81,170 @@
         });
         sel.disabled = false;
         document.getElementById("btnGen").disabled = false;
-        log("get_integrators : " + data.integrators.length + " modèles autorisés pour votre responsabilité.", "ok");
-      } catch (e) { log("ERREUR chargement modèles : " + e.message, "ko"); }
+        log("get_integrators : " + data.integrators.length + " modèles autorisés.", "ok");
+      } catch (e) { log("ERREUR modèles : " + e.message, "ko"); }
     }
 
-    // --- Etape 2 : getMetadata (mock) -> generer la feuille ---
+    // --- 2. getMetadata (mock) -> generer la feuille ---
     async function genererModele() {
-      var btn = document.getElementById("btnGen");
-      btn.disabled = true;
+      var btn = document.getElementById("btnGen"); btn.disabled = true;
       try {
         var code = document.getElementById("selInteg").value;
         var metaUrl = URL_METADATA[code];
-        if (!metaUrl) { log("Métadonnées non simulées pour " + code + " (seul JOURNALS_120 l'est).", "ko"); return; }
-
-        var meta = await (await fetch(metaUrl, { cache: "no-store" })).json();
-        var devises = (await (await fetch(URL_CURRENCIES, { cache: "no-store" })).json())
-                        .currencies.map(function (c) { return c.code; });
-        log("getMetadata(" + code + ") : " + meta.header.length + " champs d'en-tête, "
-            + meta.line_columns.length + " colonnes de lignes.", "info");
+        if (!metaUrl) { log("Métadonnées non simulées pour " + code + ".", "ko"); return; }
+        var meta = await (await fetch(metaUrl, { cache:"no-store" })).json();
+        var devises = (await (await fetch(URL_CURRENCIES, { cache:"no-store" })).json())
+                        .currencies.map(function (c){ return c.code; });
 
         await Excel.run(async function (ctx) {
           var wb = ctx.workbook;
-
-          // feuille cible (recreee)
           var sh = wb.worksheets.getItemOrNullObject(meta.sheet_name);
-          await ctx.sync();
-          if (!sh.isNullObject) { sh.delete(); }
-          sh = wb.worksheets.add(meta.sheet_name);
-          sh.activate();
+          await ctx.sync(); if (!sh.isNullObject) sh.delete();
+          sh = wb.worksheets.add(meta.sheet_name); sh.activate();
 
-          // feuille cachee des LOV (recreee)
           var lov = wb.worksheets.getItemOrNullObject("LOV");
-          await ctx.sync();
-          if (!lov.isNullObject) { lov.delete(); }
-          lov = wb.worksheets.add("LOV");
-          var lovCol = 0;
-          function addLov(values) {
-            var letter = colLetter(lovCol + 1);
-            lov.getRangeByIndexes(0, lovCol, values.length, 1).values = values.map(function (v) { return [v]; });
-            var addr = "=LOV!$" + letter + "$1:$" + letter + "$" + values.length;
-            lovCol++;
-            return addr;
-          }
+          await ctx.sync(); if (!lov.isNullObject) lov.delete();
+          lov = wb.worksheets.add("LOV"); var lovCol = 0;
+          function addLov(values){ var L=colLetter(lovCol+1);
+            lov.getRangeByIndexes(0,lovCol,values.length,1).values=values.map(function(v){return [v];});
+            var a="=LOV!$"+L+"$1:$"+L+"$"+values.length; lovCol++; return a; }
 
-          // --- En-tete : label en A, valeur (avec liste) en B ---
-          meta.header.forEach(function (f, i) {
-            sh.getRangeByIndexes(i, 0, 1, 1).values = [[f.label]];
-            var cell = sh.getRangeByIndexes(i, 1, 1, 1);
-            var vals = f.lov_ref === "currencies" ? devises : f.lov;
-            if (vals && vals.length) {
-              cell.dataValidation.clear();
-              cell.dataValidation.rule = { list: { inCellDropDown: true, source: addLov(vals) } };
-            }
-            if (f.default) { cell.values = [[f.default]]; }
-            cell.format.fill.color = "#FFF4CE";
+          meta.header.forEach(function (f,i){
+            sh.getRangeByIndexes(i,0,1,1).values=[[f.label]];
+            var cell=sh.getRangeByIndexes(i,1,1,1);
+            var vals = f.lov_ref==="currencies" ? devises : f.lov;
+            if (vals && vals.length){ cell.dataValidation.clear();
+              cell.dataValidation.rule={ list:{ inCellDropDown:true, source:addLov(vals) } }; }
+            if (f.default) cell.values=[[f.default]];
+            cell.format.fill.color="#FFF4CE";
           });
-          sh.getRangeByIndexes(0, 0, meta.header.length, 1).format.font.bold = true;
+          sh.getRangeByIndexes(0,0,meta.header.length,1).format.font.bold=true;
 
-          // --- Tableau des lignes ---
-          var hdrRow = meta.header.length + 1;   // une ligne vide puis les en-tetes
-          var heads = meta.line_columns.map(function (c) { return c.header; });
-          sh.getRangeByIndexes(hdrRow, 0, 1, heads.length).values = [heads];
-          var hdrRng = sh.getRangeByIndexes(hdrRow, 0, 1, heads.length);
-          hdrRng.format.font.bold = true;
-          hdrRng.format.fill.color = "#1F4E79";
-          hdrRng.format.font.color = "white";
+          var hdrRow = meta.header.length + 1;
+          var heads = meta.line_columns.map(function(c){ return c.header; });
+          sh.getRangeByIndexes(hdrRow,0,1,heads.length).values=[heads];
+          var hr=sh.getRangeByIndexes(hdrRow,0,1,heads.length);
+          hr.format.font.bold=true; hr.format.fill.color="#1F4E79"; hr.format.font.color="white";
 
-          // listes sur les colonnes de lignes qui ont une LOV
-          meta.line_columns.forEach(function (c, ci) {
-            if (c.lov && c.lov.length) {
-              var colRng = sh.getRangeByIndexes(hdrRow + 1, ci, meta.line_rows, 1);
-              colRng.dataValidation.clear();
-              colRng.dataValidation.rule = { list: { inCellDropDown: true, source: addLov(c.lov) } };
+          meta.line_columns.forEach(function(c,ci){
+            if (c.lov && c.lov.length){
+              var cr=sh.getRangeByIndexes(hdrRow+1,ci,meta.line_rows,1);
+              cr.dataValidation.clear();
+              cr.dataValidation.rule={ list:{ inCellDropDown:true, source:addLov(c.lov) } };
             }
           });
 
-          lov.visibility = Excel.SheetVisibility.hidden;
+          lov.visibility=Excel.SheetVisibility.hidden;
           sh.getUsedRange().format.autofitColumns();
           await ctx.sync();
 
-          log("OK : modèle '" + meta.sheet_name + "' généré (en-tête + "
-              + meta.line_rows + " lignes). Devise = " + devises.length + " valeurs Oracle.", "ok");
-          log("→ Les cellules jaunes (en-tête) et la colonne Établissement ont des listes déroulantes.", "info");
+          // memorise la disposition pour Valider/Charger
+          var find=function(arr,v){ for(var i=0;i<arr.length;i++) if(arr[i].header===v) return i; return -1; };
+          var findH=function(arr,v){ for(var i=0;i<arr.length;i++) if(arr[i].label===v) return i; return -1; };
+          LAYOUT = {
+            sheet: meta.sheet_name,
+            firstDataRow: meta.header.length + 2,
+            lineRows: meta.line_rows,
+            nCols: meta.line_columns.length,
+            colCompte: find(meta.line_columns,"Compte comptable"),
+            colDebit:  find(meta.line_columns,"Debit"),
+            colCredit: find(meta.line_columns,"Credit"),
+            colMsg:    find(meta.line_columns,"Messages"),
+            rowDevise: findH(meta.header,"Devise"),
+            rowDate:   findH(meta.header,"Date comptable"),
+            rowLivre:  findH(meta.header,"Livre"),
+            rowCateg:  findH(meta.header,"Categorie")
+          };
+          document.getElementById("btnValid").disabled=false;
+          document.getElementById("btnLoadEbs").disabled=true;
+          log("Modèle '"+meta.sheet_name+"' généré. Devise = "+devises.length+" valeurs Oracle. Saisis des lignes puis Valider.","ok");
         });
-      } catch (e) {
-        log("ERREUR génération : " + e.message, "ko");
-      } finally { btn.disabled = false; }
+      } catch (e) { log("ERREUR génération : " + e.message, "ko"); }
+      finally { document.getElementById("btnGen").disabled=false; }
+    }
+
+    // --- 3. Valider (controles N1 cote client ; en prod = service REST XX_GL_VALIDATION_PKG) ---
+    async function valider() {
+      if (!LAYOUT) { log("Génère d'abord le modèle.","ko"); return; }
+      var btn=document.getElementById("btnValid"); btn.disabled=true;
+      try {
+        await Excel.run(async function (ctx) {
+          var sh=ctx.workbook.worksheets.getItem(LAYOUT.sheet);
+          var hdr=sh.getRangeByIndexes(0,1,6,1); hdr.load("values");
+          var data=sh.getRangeByIndexes(LAYOUT.firstDataRow,0,LAYOUT.lineRows,LAYOUT.nCols); data.load("values");
+          await ctx.sync();
+
+          var devise=hdr.values[LAYOUT.rowDevise][0];
+          var datec =hdr.values[LAYOUT.rowDate][0];
+          var livre =hdr.values[LAYOUT.rowLivre][0];
+          var categ =hdr.values[LAYOUT.rowCateg][0];
+          var errH=[];
+          if(!livre) errH.push("Livre"); if(!categ) errH.push("Catégorie");
+          if(!devise) errH.push("Devise"); if(!datec) errH.push("Date comptable");
+          if(errH.length){ log("En-tête incomplet : "+errH.join(", ")+" manquant(s).","ko"); return; }
+
+          var msgs=[], ok=0, ko=0, nonEmpty=0, totD=0, totC=0;
+          for (var r=0;r<LAYOUT.lineRows;r++){
+            var row=data.values[r];
+            var compte=row[LAYOUT.colCompte], d=row[LAYOUT.colDebit], c=row[LAYOUT.colCredit];
+            var vide=(String(compte)===""&&String(d)===""&&String(c)==="");
+            if(vide){ msgs.push([""]); continue; }
+            nonEmpty++;
+            var e=[]; var nd=num(d), nc=num(c);
+            if(String(compte)==="") e.push("compte manquant");
+            if((nd>0)===(nc>0)) e.push("saisir Débit OU Crédit"); // les deux ou aucun
+            totD+=nd; totC+=nc;
+            if(e.length){ ko++; msgs.push(["KO: "+e.join(", ")]); }
+            else { ok++; msgs.push(["OK"]); }
+          }
+          // equilibre Dr/Cr
+          var balMsg="";
+          if(nonEmpty>0 && Math.abs(totD-totC)>0.001){ balMsg=" ⚠ écriture déséquilibrée (D="+totD+" / C="+totC+")"; }
+
+          sh.getRangeByIndexes(LAYOUT.firstDataRow,LAYOUT.colMsg,LAYOUT.lineRows,1).values=msgs;
+          // couleurs
+          for (var r2=0;r2<LAYOUT.lineRows;r2++){
+            var m=msgs[r2][0]; if(m==="") continue;
+            var rng=sh.getRangeByIndexes(LAYOUT.firstDataRow+r2,0,1,LAYOUT.nCols);
+            rng.format.fill.color = m==="OK" ? "#E6F4EA" : "#FBE9E7";
+          }
+          await ctx.sync();
+
+          log("Validation : "+ok+" OK, "+ko+" KO sur "+nonEmpty+" ligne(s)."+balMsg, ko?"ko":"ok");
+          document.getElementById("btnLoadEbs").disabled = (ko>0 || ok===0 || balMsg!=="");
+          if(ko===0 && ok>0 && balMsg==="") log("→ Tout est OK et équilibré. Tu peux Charger.","ok");
+          else log("→ Corrige les lignes KO / l'équilibre avant de charger.","info");
+        });
+      } catch(e){ log("ERREUR validation : "+e.message,"ko"); }
+      finally { document.getElementById("btnValid").disabled=false; }
+    }
+
+    // --- 4. Charger (mock ; en prod = service REST load -> GL_INTERFACE + Journal Import) ---
+    async function charger() {
+      if (!LAYOUT) return;
+      var btn=document.getElementById("btnLoadEbs"); btn.disabled=true;
+      try {
+        await Excel.run(async function (ctx) {
+          var sh=ctx.workbook.worksheets.getItem(LAYOUT.sheet);
+          var msg=sh.getRangeByIndexes(LAYOUT.firstDataRow,LAYOUT.colMsg,LAYOUT.lineRows,1); msg.load("values");
+          await ctx.sync();
+
+          var okRows=0, hasKo=false;
+          for(var r=0;r<LAYOUT.lineRows;r++){ var m=String(msg.values[r][0]); if(m==="OK") okRows++; if(m.indexOf("KO")===0) hasKo=true; }
+          if(hasKo || okRows===0){ log("Chargement refusé : il reste des KO ou aucune ligne OK.","ko"); return; }
+
+          // SIMULATION du chargement serveur -> renvoie un request_id
+          var reqId = Math.floor(100000 + Math.random()*900000);
+          var out=[];
+          for(var r2=0;r2<LAYOUT.lineRows;r2++){ out.push([ String(msg.values[r2][0])==="OK" ? ("Chargé — Demande "+reqId) : msg.values[r2][0] ]); }
+          sh.getRangeByIndexes(LAYOUT.firstDataRow,LAYOUT.colMsg,LAYOUT.lineRows,1).values=out;
+          await ctx.sync();
+
+          log("Chargement OK (simulé) : "+okRows+" ligne(s) → GL_INTERFACE. Journal Import lancé, Demande n° "+reqId+".","ok");
+          log("En prod : POST au service REST load → insert GL_INTERFACE + FND_REQUEST.submit_request(GLLEZL).","info");
+        });
+      } catch(e){ log("ERREUR chargement : "+e.message,"ko"); }
+      finally { document.getElementById("btnLoadEbs").disabled=false; }
     }
   </script>
 </body>
