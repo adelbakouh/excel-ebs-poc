@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>POC EBS — Excel sans ActiveX</title>
+  <title>Chargement GL - Listes Oracle</title>
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
   <style>
     body { font-family: Segoe UI, Arial, sans-serif; margin: 12px; color: #262626; }
@@ -12,22 +12,26 @@
     button { display:block; width:100%; margin:6px 0; padding:10px; font-size:13px;
              border:1px solid #1F4E79; background:#1F4E79; color:#fff; cursor:pointer; border-radius:4px; }
     button:hover { background:#163a5c; }
+    button:disabled { background:#9bb3cc; border-color:#9bb3cc; cursor:default; }
     #log { margin-top:14px; padding:10px; background:#F2F2F2; border:1px solid #D9D9D9;
            font-family:Consolas,monospace; font-size:12px; white-space:pre-wrap; min-height:120px; }
-    .ok { color:#1F6B46; } .ko { color:#C74634; }
+    .ok { color:#1F6B46; } .ko { color:#C74634; } .info { color:#404040; }
+    .cible { font-size:11px; color:#888; margin-top:2px; }
   </style>
 </head>
 <body>
-  <h2>POC — Excel &harr; serveur, sans ActiveX</h2>
-  <p class="sub">Office.js + fetch HTTPS. Aucune macro, aucun COM.</p>
+  <h2>Chargement GL &mdash; Listes Oracle</h2>
+  <p class="sub">Alimente les listes d&eacute;roulantes du mod&egrave;le WebADI depuis Oracle. Sans macro, sans ActiveX.</p>
 
-  <button id="btnFetch">1. Tester le fetch (appel sortant)</button>
-  <button id="btnWrite">2. fetch &rarr; &eacute;crire dans la feuille</button>
-  <button id="btnRead">3. lire la feuille &rarr; POST</button>
+  <button id="btnDevise">Remplir la Devise</button>
+  <p class="cible">Cible : feuille <b>WebADI</b>, cellule <b>I11</b></p>
 
   <div id="log">Pr&ecirc;t.</div>
 
   <script>
+    // PROD : remplacer par l'URL du service REST EBS des devises (meme origine que l'add-in -> pas de CORS)
+    const SOURCE_DEVISE = "currencies.json";
+
     function log(msg, cls) {
       var el = document.getElementById("log");
       var line = document.createElement("div");
@@ -39,58 +43,62 @@
     Office.onReady(function (info) {
       if (info.host === Office.HostType.Excel) {
         log("Office.js chargé — hôte Excel détecté.", "ok");
-        document.getElementById("btnFetch").onclick = testFetch;
-        document.getElementById("btnWrite").onclick = fetchWrite;
-        document.getElementById("btnRead").onclick = readPost;
+        document.getElementById("btnDevise").onclick = remplirDevise;
       } else {
         log("Hôte non-Excel.", "ko");
       }
     });
 
-    // 1 — prouve que l'appel HTTPS sortant part du bac à sable Excel
-    async function testFetch() {
+    async function remplirDevise() {
+      var btn = document.getElementById("btnDevise");
+      btn.disabled = true;
       try {
-        var r = await fetch("https://jsonplaceholder.typicode.com/users/1");
-        var d = await r.json();
-        log("OK fetch : réponse serveur = " + d.name, "ok");
-      } catch (e) { log("ERREUR fetch : " + e.message, "ko"); }
-    }
+        // 1 - appel de la source (mock JSON aujourd'hui, REST EBS en prod)
+        var r = await fetch(SOURCE_DEVISE, { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        var data = await r.json();
+        var codes = data.currencies.map(function (c) { return c.code; });
+        log("Source lue : " + codes.length + " devises reçues.", "info");
 
-    // 2 — fetch serveur -> écriture dans une plage (l'aller, type "Télécharger le modèle")
-    async function fetchWrite() {
-      try {
-        var r = await fetch("https://jsonplaceholder.typicode.com/users");
-        var users = await r.json();
+        // 2 - ecriture dans une feuille cachee + validation sur WebADI!I11
         await Excel.run(async function (ctx) {
-          var sh = ctx.workbook.worksheets.getActiveWorksheet();
-          sh.getRange("A1:C1").values = [["ID", "Nom", "Email"]];
-          var rows = users.map(function (u) { return [u.id, u.name, u.email]; });
-          sh.getRange("A2").getResizedRange(rows.length - 1, 2).values = rows;
-          sh.getUsedRange().format.autofitColumns();
-          await ctx.sync();
-        });
-        log("OK écriture : " + users.length + " lignes posées dans la feuille.", "ok");
-      } catch (e) { log("ERREUR écriture : " + e.message, "ko"); }
-    }
+          var wb = ctx.workbook;
 
-    // 3 — lecture de la plage -> POST (le retour, type "Valider")
-    async function readPost() {
-      try {
-        var values;
-        await Excel.run(async function (ctx) {
-          var used = ctx.workbook.worksheets.getActiveWorksheet().getUsedRange();
-          used.load("values");
+          var webadi = wb.worksheets.getItemOrNullObject("WebADI");
           await ctx.sync();
-          values = used.values;
+          if (webadi.isNullObject) {
+            log("Feuille 'WebADI' introuvable — ouvre le modèle GL avant de cliquer.", "ko");
+            return;
+          }
+
+          var lov = wb.worksheets.getItemOrNullObject("LOV_Devise");
+          await ctx.sync();
+          if (lov.isNullObject) { lov = wb.worksheets.add("LOV_Devise"); }
+
+          lov.getRange("A1:A1000").clear(Excel.ClearApplyTo.contents);
+          var col = codes.map(function (c) { return [c]; });
+          lov.getRange("A1").getResizedRange(codes.length - 1, 0).values = col;
+          lov.visibility = Excel.SheetVisibility.hidden;
+
+          var cell = webadi.getRange("I11");
+          cell.dataValidation.clear();
+          cell.dataValidation.rule = {
+            list: {
+              inCellDropDown: true,
+              source: "=LOV_Devise!$A$1:$A$" + codes.length
+            }
+          };
+          cell.format.fill.color = "#FFF4CE";
+          await ctx.sync();
+
+          log("OK : liste déroulante posée sur WebADI!I11 (" + codes.length + " devises).", "ok");
+          log("→ Clique la cellule I11 de la feuille WebADI : le menu déroulant apparaît.", "info");
         });
-        var r = await fetch("https://httpbin.org/post", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ lignes: values })
-        });
-        var echo = await r.json();
-        log("OK POST : le serveur a bien reçu " + echo.json.lignes.length + " lignes.", "ok");
-      } catch (e) { log("ERREUR POST : " + e.message, "ko"); }
+      } catch (e) {
+        log("ERREUR : " + e.message, "ko");
+      } finally {
+        btn.disabled = false;
+      }
     }
   </script>
 </body>
