@@ -1,0 +1,25 @@
+{
+  "_comment": "Mock de getMetadata(JOURNALS_120) - structure inspiree du vrai modele WebADI 'General Ledger - Journals'. Devise = vraie LOV (currencies.json). Autres LOV = exemples (en prod: lues depuis BNE_INTERFACE_COLS_B / value sets).",
+  "integrator_code": "JOURNALS_120",
+  "integrator_name": "General Ledger - Journals",
+  "sheet_name": "Chargement GL",
+  "header": [
+    { "label": "Livre",          "lov": ["TM2 Ledger", "Vision Operations (USA)"] },
+    { "label": "Categorie",      "lov": ["Adjustment", "Accrual", "Reclass", "Manual"] },
+    { "label": "Origine",        "lov": ["ADI", "Manual", "Spreadsheet"], "default": "ADI" },
+    { "label": "Devise",         "lov_ref": "currencies" },
+    { "label": "Date comptable", "type": "DATE" }
+  ],
+  "line_columns": [
+    { "header": "Etablissement",          "lov": ["TMPA", "TMSA", "TM2"] },
+    { "header": "Compte comptable",       "type": "TEXT" },
+    { "header": "Centre de responsabilite","type": "TEXT" },
+    { "header": "Centre de couts",        "type": "TEXT" },
+    { "header": "Projet",                 "type": "TEXT" },
+    { "header": "Debit",                  "type": "NUMBER" },
+    { "header": "Credit",                 "type": "NUMBER" },
+    { "header": "Description de la ligne", "type": "TEXT" },
+    { "header": "Messages",               "readonly": true }
+  ],
+  "line_rows": 20
+}

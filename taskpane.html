@@ -3,34 +3,41 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chargement GL - Listes Oracle</title>
+  <title>Chargement GL - Modeles Oracle</title>
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
   <style>
     body { font-family: Segoe UI, Arial, sans-serif; margin: 12px; color: #262626; }
-    h2 { font-size: 16px; color: #1F4E79; margin: 0 0 4px; }
-    p.sub { font-size: 12px; color: #666; margin: 0 0 14px; }
-    button { display:block; width:100%; margin:6px 0; padding:10px; font-size:13px;
+    h2 { font-size: 15px; color: #1F4E79; margin: 0 0 4px; }
+    p.sub { font-size: 12px; color: #666; margin: 0 0 12px; }
+    .step { font-size: 11px; font-weight: bold; color: #1F4E79; margin: 12px 0 4px; }
+    select { width: 100%; padding: 7px; font-size: 13px; margin: 2px 0 6px; }
+    button { display:block; width:100%; margin:4px 0; padding:9px; font-size:13px;
              border:1px solid #1F4E79; background:#1F4E79; color:#fff; cursor:pointer; border-radius:4px; }
     button:hover { background:#163a5c; }
     button:disabled { background:#9bb3cc; border-color:#9bb3cc; cursor:default; }
-    #log { margin-top:14px; padding:10px; background:#F2F2F2; border:1px solid #D9D9D9;
-           font-family:Consolas,monospace; font-size:12px; white-space:pre-wrap; min-height:120px; }
+    #log { margin-top:12px; padding:9px; background:#F2F2F2; border:1px solid #D9D9D9;
+           font-family:Consolas,monospace; font-size:11px; white-space:pre-wrap; min-height:90px; }
     .ok { color:#1F6B46; } .ko { color:#C74634; } .info { color:#404040; }
-    .cible { font-size:11px; color:#888; margin-top:2px; }
   </style>
 </head>
 <body>
-  <h2>Chargement GL &mdash; Listes Oracle</h2>
-  <p class="sub">Alimente les listes d&eacute;roulantes du mod&egrave;le WebADI depuis Oracle. Sans macro, sans ActiveX.</p>
+  <h2>Chargement GL &mdash; Mod&egrave;les Oracle</h2>
+  <p class="sub">Simulation du flux WebADI sans ActiveX : get_integrators &rarr; choix du mod&egrave;le &rarr; g&eacute;n&eacute;ration (colonnes + listes).</p>
 
-  <button id="btnDevise">Remplir la Devise</button>
-  <p class="cible">Cible : feuille <b>WebADI</b>, cellule <b>I11</b></p>
+  <div class="step">1. Mes mod&egrave;les autoris&eacute;s</div>
+  <button id="btnLoad">Charger mes mod&egrave;les (get_integrators)</button>
+  <select id="selInteg" disabled><option>&mdash; cliquez d'abord sur Charger &mdash;</option></select>
+
+  <div class="step">2. G&eacute;n&eacute;rer le mod&egrave;le</div>
+  <button id="btnGen" disabled>G&eacute;n&eacute;rer le mod&egrave;le choisi</button>
 
   <div id="log">Pr&ecirc;t.</div>
 
   <script>
-    // PROD : remplacer par l'URL du service REST EBS des devises (meme origine que l'add-in -> pas de CORS)
-    const SOURCE_DEVISE = "currencies.json";
+    // PROD : remplacer ces fichiers mock par les appels REST ISG (get_integrators / getMetadata)
+    const URL_INTEGRATORS = "integrators.json";
+    const URL_METADATA    = { "JOURNALS_120": "journals_metadata.json" };  // 1 par integrateur
+    const URL_CURRENCIES  = "currencies.json";
 
     function log(msg, cls) {
       var el = document.getElementById("log");
@@ -39,66 +46,117 @@
       line.textContent = msg;
       el.appendChild(line);
     }
+    function colLetter(n){ var s=""; while(n>0){ var m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=Math.floor((n-1)/26);} return s; }
 
     Office.onReady(function (info) {
       if (info.host === Office.HostType.Excel) {
         log("Office.js chargé — hôte Excel détecté.", "ok");
-        document.getElementById("btnDevise").onclick = remplirDevise;
-      } else {
-        log("Hôte non-Excel.", "ko");
-      }
+        document.getElementById("btnLoad").onclick = chargerModeles;
+        document.getElementById("btnGen").onclick  = genererModele;
+      } else { log("Hôte non-Excel.", "ko"); }
     });
 
-    async function remplirDevise() {
-      var btn = document.getElementById("btnDevise");
+    // --- Etape 1 : get_integrators (mock) -> remplir la liste ---
+    async function chargerModeles() {
+      try {
+        var r = await fetch(URL_INTEGRATORS, { cache: "no-store" });
+        var data = await r.json();
+        var sel = document.getElementById("selInteg");
+        sel.innerHTML = "";
+        data.integrators.forEach(function (it) {
+          var o = document.createElement("option");
+          o.value = it.integrator_code;
+          o.textContent = it.integrator_name + "  (" + it.integrator_code + ")";
+          sel.appendChild(o);
+        });
+        sel.disabled = false;
+        document.getElementById("btnGen").disabled = false;
+        log("get_integrators : " + data.integrators.length + " modèles autorisés pour votre responsabilité.", "ok");
+      } catch (e) { log("ERREUR chargement modèles : " + e.message, "ko"); }
+    }
+
+    // --- Etape 2 : getMetadata (mock) -> generer la feuille ---
+    async function genererModele() {
+      var btn = document.getElementById("btnGen");
       btn.disabled = true;
       try {
-        // 1 - appel de la source (mock JSON aujourd'hui, REST EBS en prod)
-        var r = await fetch(SOURCE_DEVISE, { cache: "no-store" });
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        var data = await r.json();
-        var codes = data.currencies.map(function (c) { return c.code; });
-        log("Source lue : " + codes.length + " devises reçues.", "info");
+        var code = document.getElementById("selInteg").value;
+        var metaUrl = URL_METADATA[code];
+        if (!metaUrl) { log("Métadonnées non simulées pour " + code + " (seul JOURNALS_120 l'est).", "ko"); return; }
 
-        // 2 - ecriture dans une feuille cachee + validation sur WebADI!I11
+        var meta = await (await fetch(metaUrl, { cache: "no-store" })).json();
+        var devises = (await (await fetch(URL_CURRENCIES, { cache: "no-store" })).json())
+                        .currencies.map(function (c) { return c.code; });
+        log("getMetadata(" + code + ") : " + meta.header.length + " champs d'en-tête, "
+            + meta.line_columns.length + " colonnes de lignes.", "info");
+
         await Excel.run(async function (ctx) {
           var wb = ctx.workbook;
 
-          var webadi = wb.worksheets.getItemOrNullObject("WebADI");
+          // feuille cible (recreee)
+          var sh = wb.worksheets.getItemOrNullObject(meta.sheet_name);
           await ctx.sync();
-          if (webadi.isNullObject) {
-            log("Feuille 'WebADI' introuvable — ouvre le modèle GL avant de cliquer.", "ko");
-            return;
+          if (!sh.isNullObject) { sh.delete(); }
+          sh = wb.worksheets.add(meta.sheet_name);
+          sh.activate();
+
+          // feuille cachee des LOV (recreee)
+          var lov = wb.worksheets.getItemOrNullObject("LOV");
+          await ctx.sync();
+          if (!lov.isNullObject) { lov.delete(); }
+          lov = wb.worksheets.add("LOV");
+          var lovCol = 0;
+          function addLov(values) {
+            var letter = colLetter(lovCol + 1);
+            lov.getRangeByIndexes(0, lovCol, values.length, 1).values = values.map(function (v) { return [v]; });
+            var addr = "=LOV!$" + letter + "$1:$" + letter + "$" + values.length;
+            lovCol++;
+            return addr;
           }
 
-          var lov = wb.worksheets.getItemOrNullObject("LOV_Devise");
-          await ctx.sync();
-          if (lov.isNullObject) { lov = wb.worksheets.add("LOV_Devise"); }
-
-          lov.getRange("A1:A1000").clear(Excel.ClearApplyTo.contents);
-          var col = codes.map(function (c) { return [c]; });
-          lov.getRange("A1").getResizedRange(codes.length - 1, 0).values = col;
-          lov.visibility = Excel.SheetVisibility.hidden;
-
-          var cell = webadi.getRange("I11");
-          cell.dataValidation.clear();
-          cell.dataValidation.rule = {
-            list: {
-              inCellDropDown: true,
-              source: "=LOV_Devise!$A$1:$A$" + codes.length
+          // --- En-tete : label en A, valeur (avec liste) en B ---
+          meta.header.forEach(function (f, i) {
+            sh.getRangeByIndexes(i, 0, 1, 1).values = [[f.label]];
+            var cell = sh.getRangeByIndexes(i, 1, 1, 1);
+            var vals = f.lov_ref === "currencies" ? devises : f.lov;
+            if (vals && vals.length) {
+              cell.dataValidation.clear();
+              cell.dataValidation.rule = { list: { inCellDropDown: true, source: addLov(vals) } };
             }
-          };
-          cell.format.fill.color = "#FFF4CE";
+            if (f.default) { cell.values = [[f.default]]; }
+            cell.format.fill.color = "#FFF4CE";
+          });
+          sh.getRangeByIndexes(0, 0, meta.header.length, 1).format.font.bold = true;
+
+          // --- Tableau des lignes ---
+          var hdrRow = meta.header.length + 1;   // une ligne vide puis les en-tetes
+          var heads = meta.line_columns.map(function (c) { return c.header; });
+          sh.getRangeByIndexes(hdrRow, 0, 1, heads.length).values = [heads];
+          var hdrRng = sh.getRangeByIndexes(hdrRow, 0, 1, heads.length);
+          hdrRng.format.font.bold = true;
+          hdrRng.format.fill.color = "#1F4E79";
+          hdrRng.format.font.color = "white";
+
+          // listes sur les colonnes de lignes qui ont une LOV
+          meta.line_columns.forEach(function (c, ci) {
+            if (c.lov && c.lov.length) {
+              var colRng = sh.getRangeByIndexes(hdrRow + 1, ci, meta.line_rows, 1);
+              colRng.dataValidation.clear();
+              colRng.dataValidation.rule = { list: { inCellDropDown: true, source: addLov(c.lov) } };
+            }
+          });
+
+          lov.visibility = Excel.SheetVisibility.hidden;
+          sh.getUsedRange().format.autofitColumns();
           await ctx.sync();
 
-          log("OK : liste déroulante posée sur WebADI!I11 (" + codes.length + " devises).", "ok");
-          log("→ Clique la cellule I11 de la feuille WebADI : le menu déroulant apparaît.", "info");
+          log("OK : modèle '" + meta.sheet_name + "' généré (en-tête + "
+              + meta.line_rows + " lignes). Devise = " + devises.length + " valeurs Oracle.", "ok");
+          log("→ Les cellules jaunes (en-tête) et la colonne Établissement ont des listes déroulantes.", "info");
         });
       } catch (e) {
-        log("ERREUR : " + e.message, "ko");
-      } finally {
-        btn.disabled = false;
-      }
+        log("ERREUR génération : " + e.message, "ko");
+      } finally { btn.disabled = false; }
     }
   </script>
 </body>

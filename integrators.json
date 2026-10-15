@@ -1,0 +1,10 @@
+{
+  "_comment": "Mock de get_integrators() - sortie reelle obtenue sur l'instance (resp General Ledger)",
+  "integrators": [
+    { "integrator_code": "JOURNALS_120",            "application_id": 101, "integrator_name": "General Ledger - Journals" },
+    { "integrator_code": "GL_DAILY_RATES",           "application_id": 101, "integrator_name": "General Ledger - Daily Rates" },
+    { "integrator_code": "GL_BUD_INTG",              "application_id": 101, "integrator_name": "General Ledger - Budgets" },
+    { "integrator_code": "GL_HISTORICAL_RATE_INTG",  "application_id": 101, "integrator_name": "General Ledger - Historical Rate" },
+    { "integrator_code": "HISTORICAL_RATE_INTG",     "application_id": 101, "integrator_name": "General Ledger - Historical Rates" }
+  ]
+}
